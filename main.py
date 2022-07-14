@@ -25,9 +25,24 @@
 import os
 import sys
 import argparse
-import numpy as np
-from time import time
-from scipy import sparse
+
+try:
+    import cunumeric as np
+    import sparse
+    # from scipy import sparse
+except ImportError:
+    import numpy as np
+    from scipy import sparse
+
+try:
+    from legate.timing import time
+except ImportError:
+    from time import perf_counter_ns
+
+    def time():
+        return perf_counter_ns() / 1000.0
+
+from scipy import sparse as scipy_sparse
 from scipy.spatial.distance import cdist
 
 # --
@@ -45,49 +60,37 @@ def sinkhorn_wmd(r, c, vecs, lamb, max_iter):
         Inline comments reference pseudocode from Alg. 1 in paper
             https://arxiv.org/pdf/1306.0895.pdf
     """
-    # I=(r > 0)
-    sel = r.squeeze() > 0
-    
-    # r=r(I)
-    r = r[sel].reshape(-1, 1).astype(np.float64)
-    
-    print(r.shape[0])
 
-    # M=M(I,:)
+    sel = r.squeeze() > 0
+    r = r[sel].reshape((-1, 1)).astype(np.float64)
+
+    # TODO (rohany): We probably need a distributed implementation of cdist.
     M = cdist(vecs[sel], vecs).astype(np.float64)
     
-    # x=ones(lenth(r), size(c,2)) / length(r)
     a_dim  = r.shape[0]
     b_nobs = c.shape[1]
     x      = np.ones((a_dim, b_nobs)) / a_dim 
     
-    # K=exp(-lambda * M)
     K = np.exp(M * lamb)
-    p=(1 / r) * K
-    KT=K.T
-    KM=(K * M)
-    # while x changes: x=diag(1./r)*K*(c.*(1./(K’*(1./x))))
-    
-    t = time()
+    p = (1 / r) * K
+    KT = K.T
+    KM = (K * M)
+
     it = 0
     while it < max_iter:
-        
         u = 1.0 / x
         v = c.multiply(1 / (KT @ u))
-        x = p @ v.tocsc()
-        
+
+        # x = p @ v
+        x = v.__rmatmul__(p)
         it += 1
-        
-        #print('it=%d | %f' % (it, time() - t), file=sys.stderr)
     
-    # d_lamba_M(r,c) = sum(u.*((K.*M)*v)
     u = 1.0 / x
     v = c.multiply(1 / (KT @ u))
-    return (u * ((KM) @ v)).sum(axis=0)
+    # return (u * ((KM) @ v)).sum(axis=0)
+    return (u * (v.__rmatmul__(KM))).sum(axis=0)
 
 
-# --
-# CLI
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -109,35 +112,27 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     
-    # --
-    # IO
-    
+    # Load input data.
     vecs = np.load(args.inpath + '-vecs.npy')
-    mat  = sparse.load_npz(args.inpath + '-mat.npz')
+    mat = scipy_sparse.load_npz(args.inpath + '-mat.npz').tocsr()
     
-    # --
-    # Prep
     
-    # Maybe subset docs
+    # Maybe subset docs.
     if args.n_docs:
         mat  = mat[:,:args.n_docs]
     
-    # --
-    # Run
-    
-    # Get query vector
+    # Get query vector.
     r = np.asarray(mat[:,args.query_idx].todense()).squeeze()
    
+    # Convert the loaded scipy sparse matrix into a legate sparse matrix.
+    mat = sparse.csr_array(mat)
+
     t = time()
     scores = sinkhorn_wmd(r, mat, vecs, lamb=args.lamb, max_iter=args.max_iter)
- 
     elapsed = time() - t
-    print('elapsed=%f' % elapsed, file=sys.stderr)
+    print('elapsed=%f ms.' % (elapsed / 1000.0), file=sys.stderr)
     
-    # --
-    # Write output
-    
+    # Write output.
     os.makedirs('results', exist_ok=True)
-    
     np.savetxt('results/scores', scores, fmt='%.8f')
     open('results/elapsed', 'w').write(str(elapsed))
