@@ -22,10 +22,6 @@
     ~ Ben Johnson (bkj.322@gmail.com)
 """
 
-import os
-import sys
-import argparse
-
 try:
     import cunumeric as np
     import sparse
@@ -42,13 +38,13 @@ except ImportError:
     def time():
         return perf_counter_ns() / 1000.0
 
+import os
+import sys
+import argparse
 from scipy import sparse as scipy_sparse
 from scipy.spatial.distance import cdist
 
-# --
-# Sinkhorn
 
-#@profile
 def sinkhorn_wmd(r, c, vecs, lamb, max_iter):
     """
         r (np.array):          query vector (sparse, but represented as dense)
@@ -65,7 +61,7 @@ def sinkhorn_wmd(r, c, vecs, lamb, max_iter):
     r = r[sel].reshape((-1, 1)).astype(np.float64)
 
     # TODO (rohany): We probably need a distributed implementation of cdist.
-    M = cdist(vecs[sel], vecs).astype(np.float64)
+    M = np.array(cdist(vecs[sel], vecs), dtype=np.float64)
     
     a_dim  = r.shape[0]
     b_nobs = c.shape[1]
@@ -73,14 +69,13 @@ def sinkhorn_wmd(r, c, vecs, lamb, max_iter):
     
     K = np.exp(M * lamb)
     p = (1 / r) * K
-    KT = K.T
+    KT = np.array(K.T)
     KM = (K * M)
 
     it = 0
     while it < max_iter:
         u = 1.0 / x
         v = c.multiply(1 / (KT @ u))
-
         # x = p @ v
         x = v.__rmatmul__(p)
         it += 1
@@ -89,7 +84,6 @@ def sinkhorn_wmd(r, c, vecs, lamb, max_iter):
     v = c.multiply(1 / (KT @ u))
     # return (u * ((KM) @ v)).sum(axis=0)
     return (u * (v.__rmatmul__(KM))).sum(axis=0)
-
 
 
 def parse_args():
