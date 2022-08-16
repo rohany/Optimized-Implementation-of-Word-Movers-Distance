@@ -10,6 +10,7 @@ import argparse
 import numpy as np
 import pandas as pd
 from scipy import sparse
+from scipy import io as sci_io
 from tqdm import trange, tqdm
 
 # --
@@ -90,5 +91,6 @@ if __name__ == "__main__":
     open(args.outpath + '-docs', 'w').write('\n'.join(docs))
     np.save(args.outpath + '-toks', toks)
     np.save(args.outpath + '-vecs', vecs)
+    sci_io.mmwrite(args.outpath + '-full-mat.mtx', mat)
 
 

@@ -25,10 +25,11 @@
 try:
     import cunumeric as np
     import sparse
-    # from scipy import sparse
+    from sparse.spatial import cdist
 except ImportError:
     import numpy as np
     from scipy import sparse
+    from scipy.spatial.distance import cdist
 
 try:
     from legate.timing import time
@@ -42,10 +43,9 @@ import os
 import sys
 import argparse
 from scipy import sparse as scipy_sparse
-from scipy.spatial.distance import cdist
 
 
-def sinkhorn_wmd(r, c, vecs, lamb, max_iter):
+def sinkhorn_wmd(r, c, vecs, lamb, max_iter, use_sddmm=False):
     """
         r (np.array):          query vector (sparse, but represented as dense)
         c (sparse.csr_matrix): data vectors, in CSR format.  shape is `(dim, num_observations)`
@@ -57,10 +57,11 @@ def sinkhorn_wmd(r, c, vecs, lamb, max_iter):
             https://arxiv.org/pdf/1306.0895.pdf
     """
 
+    start = time()
     sel = r.squeeze() > 0
     r = r[sel].reshape((-1, 1)).astype(np.float64)
 
-    # TODO (rohany): We probably need a distributed implementation of cdist.
+    vecs = np.array(vecs)
     M = np.array(cdist(vecs[sel], vecs), dtype=np.float64)
     
     a_dim  = r.shape[0]
@@ -68,6 +69,7 @@ def sinkhorn_wmd(r, c, vecs, lamb, max_iter):
     x      = np.ones((a_dim, b_nobs)) / a_dim 
     
     K = np.exp(M * lamb)
+
     p = (1 / r) * K
     KT = np.array(K.T)
     KM = (K * M)
@@ -75,15 +77,28 @@ def sinkhorn_wmd(r, c, vecs, lamb, max_iter):
     it = 0
     while it < max_iter:
         u = 1.0 / x
-        v = c.multiply(1 / (KT @ u))
-        # x = p @ v
-        x = v.__rmatmul__(p)
+        if use_sddmm:
+            v = 1.0 / (1.0 / c).sddmm(KT, u)
+        else:
+            v = c.multiply(1 / (KT @ u))
+
+        # The original implementation calculates x = p @ v. However, the
+        # "reverse" SpMM operation is extremely expensive to compute. It's
+        # better for us if we compute xT = vT @ pT so that we can utilize
+        # the efficient standard SpMM kernels.
+        tmp = v.T.tocsr() @ np.array(p.T)
+        x = np.array(tmp.T)
         it += 1
     
     u = 1.0 / x
-    v = c.multiply(1 / (KT @ u))
-    # return (u * ((KM) @ v)).sum(axis=0)
-    return (u * (v.__rmatmul__(KM))).sum(axis=0)
+    if use_sddmm:
+        v = 1.0 / (1.0 / c).sddmm(KT, u)
+    else:
+        v = c.multiply(1 / (KT @ u))
+
+    # Similiarly to above, compute KM.T @ v using a standard SpMM.
+    tmp = v.T.tocsr() @ np.array(KM.T)
+    return (u * np.array(tmp.T)).sum(axis=0)
 
 
 def parse_args():
@@ -93,12 +108,13 @@ def parse_args():
     parser.add_argument('--query-idx', type=int, default=100)
     parser.add_argument('--lamb', type=float, default=-1)
     parser.add_argument('--max_iter', type=int, default=15)
+    parser.add_argument('--use-sddmm', action="store_true", default=False)
     args = parser.parse_args()
     
     # !! In order to check accuracy, you _must_ use these parameters !!
     assert args.inpath == 'data/cache'
-    assert args.n_docs == 5000
-    assert args.query_idx == 100
+    # assert args.n_docs == 5000
+    # assert args.query_idx == 100
     
     return args
 
@@ -110,7 +126,6 @@ if __name__ == "__main__":
     vecs = np.load(args.inpath + '-vecs.npy')
     mat = scipy_sparse.load_npz(args.inpath + '-mat.npz').tocsr()
     
-    
     # Maybe subset docs.
     if args.n_docs:
         mat  = mat[:,:args.n_docs]
@@ -119,10 +134,12 @@ if __name__ == "__main__":
     r = np.asarray(mat[:,args.query_idx].todense()).squeeze()
    
     # Convert the loaded scipy sparse matrix into a legate sparse matrix.
-    mat = sparse.csr_array(mat)
+    mat = sparse.csr_array(mat).tocsc()
+    # mat = sparse.csr_array(mat)
+    # mat.balance_row_partitions()
 
     t = time()
-    scores = sinkhorn_wmd(r, mat, vecs, lamb=args.lamb, max_iter=args.max_iter)
+    scores = sinkhorn_wmd(r, mat, vecs, lamb=args.lamb, max_iter=args.max_iter, use_sddmm=args.use_sddmm)
     elapsed = time() - t
     print('elapsed=%f ms.' % (elapsed / 1000.0), file=sys.stderr)
     

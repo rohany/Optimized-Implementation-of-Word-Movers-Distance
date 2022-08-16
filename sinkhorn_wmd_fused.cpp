@@ -413,7 +413,7 @@ void inline sinkhorn_wmd(const double* r, const double* vecs, REAL* WMD,
 
 
 int main(int argc, char* argv[]) {
-	const char* mat_filename = "./data/mat.mtx";
+	const char* mat_filename = "./data/cache-full-mat.mtx";
 
 	cout << "Reading c_csr matrix csr: " << mat_filename << endl;
 	ifstream mat_file(mat_filename);
