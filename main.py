@@ -56,8 +56,6 @@ def sinkhorn_wmd(r, c, vecs, lamb, max_iter, use_sddmm=False):
         Inline comments reference pseudocode from Alg. 1 in paper
             https://arxiv.org/pdf/1306.0895.pdf
     """
-
-    start = time()
     sel = r.squeeze() > 0
     r = r[sel].reshape((-1, 1)).astype(np.float64)
 
